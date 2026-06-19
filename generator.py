@@ -2,10 +2,10 @@
 """
 simulator_web - 食堂智能取餐器设备数据模拟器（纯CSV版）
 ========================================================
-读取 devices_config.csv → 随机生成22台设备状态 → 输出 3 个 CSV
+读取 devices_config.csv → 固定状态分配22台设备 → 输出 3 个 CSV
 
 用法:
-  python3 generator.py [--once] [--interval 30]
+  python3 generator.py [--once] [--interval 0.125]
 
   --once      单次生成后退出
   --interval  循环模式刷新间隔（默认30秒）
@@ -41,13 +41,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("simulator")
 
-# ── 状态权重 ────────────────────────────────────────────────────
-STATUS_WEIGHTS = {
-    "online":       72,
-    "alert":        10,
-    "offline":       8,
-    "maintenance":  10,
+# ── 固定状态分配（22台）─────────────────────────────────────────
+FIXED_STATUS = {
+    "online":      17,  # 正常运行
+    "offline":      1,  # 离线
+    "alert":        3,  # 在线但告警
+    "maintenance":  1,  # 在线但维护中
 }
+# 在线(广义)=17+3+1=21, 离线=1, 总22
 
 FAULT_TYPES = ["温度过高", "CPU满载", "网络超时", "内存不足", "磁盘异常", "进程僵死"]
 
@@ -66,14 +67,17 @@ def load_devices() -> list[dict]:
     return devices
 
 
-def simulate_device(device: dict) -> dict:
-    """给一台设备生成随机运行时数据"""
-    status = random.choices(
-        list(STATUS_WEIGHTS.keys()),
-        weights=list(STATUS_WEIGHTS.values()),
-        k=1,
-    )[0]
+def assign_statuses(device_count: int) -> list[str]:
+    """按固定配额分配状态，返回打乱后的状态列表"""
+    statuses = []
+    for st, count in FIXED_STATUS.items():
+        statuses.extend([st] * count)
+    random.shuffle(statuses)
+    return statuses
 
+
+def simulate_device(device: dict, status: str) -> dict:
+    """给一台设备按指定状态生成随机运行指标"""
     if status == "online":
         cpu = round(random.gauss(38, 15), 1)
         ram = round(random.gauss(52, 12), 1)
@@ -106,11 +110,14 @@ def simulate_device(device: dict) -> dict:
     }
 
 
+def simulate_all(config_devices: list[dict]) -> list[dict]:
+    """按固定状态分配，生成全部22台设备数据"""
+    statuses = assign_statuses(len(config_devices))
+    return [simulate_device(dev, st) for dev, st in zip(config_devices, statuses)]
+
+
 def generate_csvs(simulated: list[dict]) -> dict:
-    """
-    生成 3 个 CSV 文件
-    返回状态统计 dict
-    """
+    """生成 3 个 CSV 文件，返回状态统计"""
 
     # ── 1. devices_list.csv ──
     with open(OUTPUT_DIR / "devices_list.csv", "w", newline="", encoding="utf-8") as f:
@@ -163,25 +170,59 @@ def generate_csvs(simulated: list[dict]) -> dict:
     return status_counts
 
 
-def log_cycle(status_counts: dict, fault_count: int):
+def compute_stats(simulated: list[dict]) -> dict:
+    """计算本轮模拟的 CPU/内存/在线率 统计"""
+    all_online = [s for s in simulated if s["status"] != "offline"]
+    all_devices = simulated
+
+    cpu_vals = [s["cpu"] for s in all_devices]
+    ram_vals = [s["ram"] for s in all_devices]
+    uptime_vals = [
+        float(s["uptime"].replace("%", ""))
+        for s in all_online if s["uptime"] != "0.0%"
+    ]
+
+    return {
+        "cpu_avg":   round(sum(cpu_vals) / len(cpu_vals), 1),
+        "cpu_max":   max(cpu_vals),
+        "ram_avg":   round(sum(ram_vals) / len(ram_vals), 1),
+        "ram_max":   max(ram_vals),
+        "uptime_avg": round(sum(uptime_vals) / len(uptime_vals), 1) if uptime_vals else 0,
+    }
+
+
+def log_cycle(status_counts: dict, stats: dict):
     """记录本周期摘要到日志"""
+    fault_count = status_counts["offline"] + status_counts["alert"]
     logger.info(
-        "📊 22台 | 在线:%d 离线:%d 告警:%d 维护:%d 故障设备:%d → CSV 已刷新",
+        "📊 设备: 在线%d(正常%d+告警%d+维护%d) 离线%d 故障%d | "
+        "CPU均值%.1f%%(峰值%.0f%%) 内存均值%.1f%%(峰值%.0f%%) 平均在线率%.1f%% | CSV已刷新",
+        status_counts["online"] + status_counts["alert"] + status_counts["maintenance"],
         status_counts["online"],
-        status_counts["offline"],
         status_counts["alert"],
         status_counts["maintenance"],
+        status_counts["offline"],
         fault_count,
+        stats["cpu_avg"], stats["cpu_max"],
+        stats["ram_avg"], stats["ram_max"],
+        stats["uptime_avg"],
     )
 
 
-def log_fault_details(simulated: list[dict]):
-    """记录故障设备详情到日志"""
+def log_device_details(simulated: list[dict]):
+    """记录每台设备的 CPU/内存/状态 详情"""
     for s in simulated:
         if s["status"] in ("alert", "offline"):
             logger.warning(
-                "⚠️ 故障设备 | ID:%s 名称:%s 状态:%s 故障:%s",
-                s["id"], s["name"], s["status"], s["alert"]
+                "⚠️ %s | %s | %s | CPU:%.1f%% RAM:%.1f%% 在线:%s 故障:%s",
+                s["id"], s["name"], s["status"],
+                s["cpu"], s["ram"], s["uptime"], s["alert"]
+            )
+        else:
+            logger.info(
+                "   %s | %s | %s | CPU:%.1f%% RAM:%.1f%% 在线:%s",
+                s["id"], s["name"], s["status"],
+                s["cpu"], s["ram"], s["uptime"]
             )
 
 
@@ -191,29 +232,27 @@ def log_fault_details(simulated: list[dict]):
 
 def run_once():
     config_devices = load_devices()
-    simulated = [simulate_device(d) for d in config_devices]
+    simulated = simulate_all(config_devices)
     status_counts = generate_csvs(simulated)
-    fault_count = status_counts["offline"] + status_counts["alert"]
-    log_cycle(status_counts, fault_count)
-    if fault_count > 0:
-        log_fault_details(simulated)
+    stats = compute_stats(simulated)
+    log_cycle(status_counts, stats)
+    log_device_details(simulated)
     logger.info("✅ 单次生成完成")
 
 
 def run_loop(interval: float = 30):
-    logger.info("🔄 循环模式启动 | 刷新间隔: %ds", interval)
+    logger.info("🔄 循环模式启动 | 刷新间隔: %.3fs (每秒%.0f次)", interval, 1/interval if interval > 0 else 0)
     config_devices = load_devices()
 
     cycle = 0
     while True:
         try:
             cycle += 1
-            simulated = [simulate_device(d) for d in config_devices]
+            simulated = simulate_all(config_devices)
             status_counts = generate_csvs(simulated)
-            fault_count = status_counts["offline"] + status_counts["alert"]
-            log_cycle(status_counts, fault_count)
-            if fault_count > 0:
-                log_fault_details(simulated)
+            stats = compute_stats(simulated)
+            log_cycle(status_counts, stats)
+            log_device_details(simulated)
             time.sleep(interval)
         except KeyboardInterrupt:
             logger.info("👋 收到停止信号，已退出（共运行 %d 轮）", cycle)
