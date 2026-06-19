@@ -1,0 +1,12 @@
+services:
+  simulator:
+    build: .
+    container_name: cafeteria-simulator
+    volumes:
+      - ./output:/app/output        # CSV 输出持久化到宿主机
+      - ./config:/app/config:ro     # 设备配置只读挂载
+    restart: unless-stopped
+    environment:
+      - OUTPUT_DIR=/app/output
+      - TZ=Asia/Shanghai
+    command: ["python3", "generator.py", "--interval", "30"]

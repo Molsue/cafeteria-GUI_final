@@ -1,6 +1,5 @@
-__pycache__/
+output/
 *.pyc
+__pycache__/
 *.log
 .env
-*.pyo
-.DS_Store
