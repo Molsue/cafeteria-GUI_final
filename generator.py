@@ -12,8 +12,10 @@ simulator_web - 食堂智能取餐器设备数据模拟器（纯CSV版）
 """
 
 import csv
+import logging
 import os
 import random
+import sys
 import time
 import argparse
 from datetime import datetime, timedelta
@@ -24,6 +26,20 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_CSV = BASE_DIR / "config" / "devices_config.csv"
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", BASE_DIR / "output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+LOG_FILE = OUTPUT_DIR / "simulator.log"
+
+# ── 日志 ────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("simulator")
 
 # ── 状态权重 ────────────────────────────────────────────────────
 STATUS_WEIGHTS = {
@@ -46,7 +62,7 @@ def load_devices() -> list[dict]:
     with open(CONFIG_CSV, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             devices.append(row)
-    print(f"📋 加载设备配置: {len(devices)} 台")
+    logger.info("📋 加载设备配置: %d 台", len(devices))
     return devices
 
 
@@ -90,8 +106,11 @@ def simulate_device(device: dict) -> dict:
     }
 
 
-def generate_csvs(simulated: list[dict]):
-    """生成 3 个 CSV 文件"""
+def generate_csvs(simulated: list[dict]) -> dict:
+    """
+    生成 3 个 CSV 文件
+    返回状态统计 dict
+    """
 
     # ── 1. devices_list.csv ──
     with open(OUTPUT_DIR / "devices_list.csv", "w", newline="", encoding="utf-8") as f:
@@ -141,10 +160,29 @@ def generate_csvs(simulated: list[dict]):
                 "action":       action,
             })
 
-    total = len(simulated)
-    print(f"📊 [{datetime.now().strftime('%H:%M:%S')}] {total}台 | "
-          f"在线:{status_counts['online']} 离线:{status_counts['offline']} "
-          f"告警:{status_counts['alert']} 维护:{status_counts['maintenance']} → CSV 已刷新")
+    return status_counts
+
+
+def log_cycle(status_counts: dict, fault_count: int):
+    """记录本周期摘要到日志"""
+    logger.info(
+        "📊 22台 | 在线:%d 离线:%d 告警:%d 维护:%d 故障设备:%d → CSV 已刷新",
+        status_counts["online"],
+        status_counts["offline"],
+        status_counts["alert"],
+        status_counts["maintenance"],
+        fault_count,
+    )
+
+
+def log_fault_details(simulated: list[dict]):
+    """记录故障设备详情到日志"""
+    for s in simulated:
+        if s["status"] in ("alert", "offline"):
+            logger.warning(
+                "⚠️ 故障设备 | ID:%s 名称:%s 状态:%s 故障:%s",
+                s["id"], s["name"], s["status"], s["alert"]
+            )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -154,24 +192,34 @@ def generate_csvs(simulated: list[dict]):
 def run_once():
     config_devices = load_devices()
     simulated = [simulate_device(d) for d in config_devices]
-    generate_csvs(simulated)
-    print("✅ 单次生成完成")
+    status_counts = generate_csvs(simulated)
+    fault_count = status_counts["offline"] + status_counts["alert"]
+    log_cycle(status_counts, fault_count)
+    if fault_count > 0:
+        log_fault_details(simulated)
+    logger.info("✅ 单次生成完成")
 
 
 def run_loop(interval: int = 30):
-    print(f"🔄 循环模式 | 刷新间隔: {interval}s | Ctrl+C 退出")
+    logger.info("🔄 循环模式启动 | 刷新间隔: %ds", interval)
     config_devices = load_devices()
 
+    cycle = 0
     while True:
         try:
+            cycle += 1
             simulated = [simulate_device(d) for d in config_devices]
-            generate_csvs(simulated)
+            status_counts = generate_csvs(simulated)
+            fault_count = status_counts["offline"] + status_counts["alert"]
+            log_cycle(status_counts, fault_count)
+            if fault_count > 0:
+                log_fault_details(simulated)
             time.sleep(interval)
         except KeyboardInterrupt:
-            print("\n👋 已停止")
+            logger.info("👋 收到停止信号，已退出（共运行 %d 轮）", cycle)
             break
         except Exception as e:
-            print(f"⚠️ 错误: {e}")
+            logger.error("⚠️ 第 %d 轮异常: %s", cycle, e)
             time.sleep(5)
 
 
