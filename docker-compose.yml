@@ -9,4 +9,4 @@ services:
     environment:
       - OUTPUT_DIR=/app/output
       - TZ=Asia/Shanghai
-    command: ["python3", "generator.py", "--interval", "30"]
+    command: ["python3", "generator.py", "--interval", "0.125"]

@@ -200,7 +200,7 @@ def run_once():
     logger.info("✅ 单次生成完成")
 
 
-def run_loop(interval: int = 30):
+def run_loop(interval: float = 30):
     logger.info("🔄 循环模式启动 | 刷新间隔: %ds", interval)
     config_devices = load_devices()
 
@@ -226,7 +226,7 @@ def run_loop(interval: int = 30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="食堂取餐器设备模拟器（纯CSV）")
     parser.add_argument("--once", action="store_true", help="单次运行")
-    parser.add_argument("--interval", type=int, default=30, help="刷新间隔(秒), 默认30")
+    parser.add_argument("--interval", type=float, default=30, help="刷新间隔(秒), 默认30")
     args = parser.parse_args()
 
     if args.once:
