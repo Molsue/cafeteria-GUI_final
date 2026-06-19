@@ -1,0 +1,5 @@
+status,count,color
+online,16,#22C55E
+offline,4,#EF4444
+alert,2,#F59E0B
+maintenance,0,#3B82F6
